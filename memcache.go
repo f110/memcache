@@ -27,6 +27,7 @@ import (
 	"runtime"
 	"sync"
 	"time"
+	//"fmt"
 )
 
 // Similar to:
@@ -65,6 +66,8 @@ var (
 
 	// ErrBadIncrDec is returned when performing a incr/decr on non-numeric values.
 	ErrBadIncrDec = errors.New("memcache: incr or decr on non-numeric value")
+
+	ErrPacketDropped = errors.New("memcache: udp packet dropped")
 
 	putUint16 = binary.BigEndian.PutUint16
 	putUint32 = binary.BigEndian.PutUint32
@@ -658,23 +661,30 @@ func (c *Client) parseResponse(rKey string, cn *conn) ([]byte, []byte, []byte, [
 
 func (c *Client) parseUDPResponse(rKey string, cn *conn) ([]byte, []byte, []byte, []byte, error) {
 	var err error
+	res := make([]byte, 0)
 	buf := make([]byte, 65536)
 	hdr := make([]byte, 24)
 	totalLen, err := cn.nc.Read(buf)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	buf = buf[0:totalLen]
 	seq := bUint16(buf[2:4])
 	totalPacket := bUint16(buf[4:6])
-	a := totalLen
-	if totalPacket > 1 {
-		nextBuf := make([]byte, 65536)
-		n, err := cn.nc.Read(nextBuf)
-		copy(buf[a:], nextBuf[:n])
+	res = append(res, buf[8:totalLen]...)
+	for i := 1; uint16(i) < totalPacket; i++ {
+		n, err := cn.nc.Read(buf)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		nextSeq := bUint16(buf[2:4])
+		if seq + 1 != nextSeq {
+			return nil, nil, nil, nil, ErrPacketDropped
+		}
+		res = append(res, buf[8:n]...)
+		seq = nextSeq
 	}
 
-	hdr = buf[8:32]
+	hdr = res[0:24]
 	if hdr[0] != respMagic {
 		return nil, nil, nil, nil, ErrBadMagic
 	}
@@ -693,19 +703,19 @@ func (c *Client) parseUDPResponse(rKey string, cn *conn) ([]byte, []byte, []byte
 	el := int(hdr[4])
 	if el > 0 {
 		extras = make([]byte, el)
-		extras = buf[32:32+el]
+		extras = res[24:24+el]
 	}
 	var key []byte
 	kl := int(bUint16(hdr[2:4]))
 	if kl > 0 {
 		key = make([]byte, int(kl))
-		key = buf[32+el:32+el+int(kl)]
+		key = res[24+el:24+el+int(kl)]
 	}
 	var value []byte
 	vl := total - el - kl
 	if vl > 0 {
 		value = make([]byte, vl)
-		value = buf[32+el+int(kl):32+el+int(kl)+vl]
+		value = res[24+el+int(kl):24+el+int(kl)+vl]
 	}
 	return hdr, key, extras, value, nil
 }
