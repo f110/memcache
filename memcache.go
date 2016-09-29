@@ -676,7 +676,6 @@ func (c *Client) parseResponse(rKey string, cn *conn) ([]byte, []byte, []byte, [
 
 func (c *Client) parseUDPResponse(rKey string, cn *conn, reqId uint16) ([]byte, []byte, []byte, []byte, error) {
 	var err error
-	res := make([]byte, 0)
 	buf := make([]byte, 65536)
 	hdr := make([]byte, 24)
 	totalLen, err := cn.nc.Read(buf)
@@ -689,6 +688,7 @@ func (c *Client) parseUDPResponse(rKey string, cn *conn, reqId uint16) ([]byte, 
 	}
 	seq := bUint16(buf[2:4])
 	totalPacket := bUint16(buf[4:6])
+	res := make([]byte, 0, totalLen * int(totalPacket))
 	res = append(res, buf[8:totalLen]...)
 	for i := 1; uint16(i) < totalPacket; i++ {
 		n, err := cn.nc.Read(buf)

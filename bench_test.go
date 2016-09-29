@@ -108,7 +108,7 @@ func benchmarkConcurrentSetGet(b *testing.B, item *Item, count int, opcount int)
 
 func BenchmarkGetCacheMiss(b *testing.B) {
 	key := "not"
-	cmd, c := newUnixServer(b)
+	c := newLocalhostServer(b)
 	c.SetTimeout(time.Duration(-1))
 	c.Delete(key)
 	b.ResetTimer()
@@ -118,8 +118,20 @@ func BenchmarkGetCacheMiss(b *testing.B) {
 		}
 	}
 	b.StopTimer()
-	cmd.Process.Kill()
-	cmd.Wait()
+}
+
+func BenchmarkGetUDPCacheMiss(b *testing.B) {
+	key := "not"
+	c := newLocalhostServer(b)
+	c.SetTimeout(time.Duration(-1))
+	c.Delete(key)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := c.GetUDP(key); err != ErrCacheMiss {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
 }
 
 func BenchmarkConcurrentSetGetSmall10_100(b *testing.B) {
