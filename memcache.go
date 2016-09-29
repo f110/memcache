@@ -27,6 +27,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+	"math/rand"
+	"math"
 	//"fmt"
 )
 
@@ -222,6 +224,7 @@ func NewFromServers(servers Servers) *Client {
 		servers:        servers,
 		freeconn:       make(map[string]chan *conn),
 		bufPool:        make(chan []byte, poolSize()),
+		reqId:          uint16(rand.Intn(math.MaxUint16)),
 	}
 }
 
@@ -234,6 +237,17 @@ type Client struct {
 	mu             sync.RWMutex
 	freeconn       map[string]chan *conn
 	bufPool        chan []byte
+	reqId          uint16
+}
+
+func (c *Client) NextReqId() uint16 {
+	if c.reqId == math.MaxUint16 {
+		c.reqId = 0
+		return 0
+	}
+
+	c.reqId++
+	return c.reqId
 }
 
 // Timeout returns the socket read/write timeout. By default, it's
@@ -474,11 +488,11 @@ func (c *Client) Get(key string) (*Item, error) {
 }
 
 func (c *Client) GetUDP(key string) (*Item, error) {
-	cn, err := c.sendUDPCommand(key, cmdGet, nil, 0, nil)
+	cn, reqId, err := c.sendUDPCommand(key, cmdGet, nil, 0, nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.parseItemUDPResponse(key, cn, true)
+	return c.parseItemUDPResponse(key, cn, reqId, true)
 }
 
 func (c *Client) sendCommand(key string, cmd command, value []byte, casid uint64, extras []byte) (*conn, error) {
@@ -498,21 +512,21 @@ func (c *Client) sendCommand(key string, cmd command, value []byte, casid uint64
 	return cn, err
 }
 
-func (c *Client) sendUDPCommand(key string, cmd command, value []byte, casid uint64, extras []byte) (*conn, error) {
+func (c *Client) sendUDPCommand(key string, cmd command, value []byte, casid uint64, extras []byte) (*conn, uint16, error) {
 	addr, err := c.servers.PickServer(key)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	cn, err := c.getUDPConn(addr)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	err = c.sendUDPConnCommand(cn, key, cmd, value, casid, extras)
+	reqId, err := c.sendUDPConnCommand(cn, key, cmd, value, casid, extras)
 	if err != nil {
 		cn.nc.Close()
-		return nil, err
+		return nil, 0, err
 	}
-	return cn, err
+	return cn, reqId, err
 }
 
 func (c *Client) sendConnCommand(cn *conn, key string, cmd command, value []byte, casid uint64, extras []byte) (err error) {
@@ -566,11 +580,12 @@ func (c *Client) sendConnCommand(cn *conn, key string, cmd command, value []byte
 	return nil
 }
 
-func (c *Client) sendUDPConnCommand(cn *conn, key string, cmd command, value []byte, casid uint64, extras []byte) (err error) {
+func (c *Client) sendUDPConnCommand(cn *conn, key string, cmd command, value []byte, casid uint64, extras []byte) (reqId uint16, err error) {
 	var buf []byte
 	// 32 is header size
 	buf = make([]byte, 32, 32+len(key)+len(extras))
-	putUint16(buf[0:], uint16(0))
+	reqId = c.NextReqId()
+	putUint16(buf[0:], uint16(reqId))
 	putUint16(buf[2:], uint16(0))
 	putUint16(buf[4:], uint16(1))
 	putUint16(buf[6:], uint16(0))
@@ -602,14 +617,14 @@ func (c *Client) sendUDPConnCommand(cn *conn, key string, cmd command, value []b
 		buf = append(buf, stobs(key)...)
 	}
 	if _, err = cn.nc.Write(buf); err != nil {
-		return err
+		return 0, err
 	}
 	if vl > 0 {
 		if _, err = cn.nc.Write(value); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return nil
+	return reqId, nil
 }
 
 func (c *Client) parseResponse(rKey string, cn *conn) ([]byte, []byte, []byte, []byte, error) {
@@ -659,7 +674,7 @@ func (c *Client) parseResponse(rKey string, cn *conn) ([]byte, []byte, []byte, [
 	return hdr, key, extras, value, nil
 }
 
-func (c *Client) parseUDPResponse(rKey string, cn *conn) ([]byte, []byte, []byte, []byte, error) {
+func (c *Client) parseUDPResponse(rKey string, cn *conn, reqId uint16) ([]byte, []byte, []byte, []byte, error) {
 	var err error
 	res := make([]byte, 0)
 	buf := make([]byte, 65536)
@@ -667,6 +682,10 @@ func (c *Client) parseUDPResponse(rKey string, cn *conn) ([]byte, []byte, []byte
 	totalLen, err := cn.nc.Read(buf)
 	if err != nil {
 		return nil, nil, nil, nil, err
+	}
+	gotReqId := bUint16(buf[0:2])
+	if reqId != gotReqId {
+		return nil, nil, nil, nil, ErrPacketDropped
 	}
 	seq := bUint16(buf[2:4])
 	totalPacket := bUint16(buf[4:6])
@@ -691,9 +710,6 @@ func (c *Client) parseUDPResponse(rKey string, cn *conn) ([]byte, []byte, []byte
 	total := int(bUint32(hdr[8:12]))
 	status := bUint16(hdr[6:8])
 	if status != respOk {
-		if _, err = io.CopyN(ioutil.Discard, cn.nc, int64(total)); err != nil {
-			return nil, nil, nil, nil, err
-		}
 		if status == respInvalidArgs && !legalKey(rKey) {
 			return nil, nil, nil, nil, ErrMalformedKey
 		}
@@ -752,8 +768,8 @@ func (c *Client) parseItemResponse(key string, cn *conn, release bool) (*Item, e
 	}, nil
 }
 
-func (c *Client) parseItemUDPResponse(key string, cn *conn, release bool) (*Item, error) {
-	hdr, k, extras, value, err := c.parseUDPResponse(key, cn)
+func (c *Client) parseItemUDPResponse(key string, cn *conn, reqId uint16, release bool) (*Item, error) {
+	hdr, k, extras, value, err := c.parseUDPResponse(key, cn, reqId)
 	if release {
 		c.condRelease(cn, &err)
 	}

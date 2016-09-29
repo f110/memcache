@@ -79,6 +79,7 @@ func newUnixServer(tb testing.TB) (*exec.Cmd, *Client) {
 
 func TestLocalhost(t *testing.T) {
 	testWithClient(t, newLocalhostServer(t))
+	testUDPWithClient(t, newLocalhostServer(t))
 }
 
 // Run the memcached binary as a child process and connect to its unix socket.
@@ -198,5 +199,34 @@ func testWithClient(t *testing.T, c *Client) {
 	_, err = c.Get("bar")
 	if err != ErrCacheMiss {
 		t.Fatalf("post-flush: want ErrCacheMiss, got %v", err)
+	}
+}
+
+func testUDPWithClient(t *testing.T, c *Client) {
+	checkErr := func(err error, format string, args ...interface{}) {
+		if err != nil {
+			t.Fatalf(format, args...)
+		}
+	}
+	foo := &Item{Key: "foo", Value: []byte("fooval"), Flags: 123}
+	err := c.Set(foo)
+
+	// GetUDP
+	it, err := c.GetUDP("foo")
+	checkErr(err, "get(foo): %v", err)
+	if it.Key != "foo" {
+		t.Errorf("get(foo) Key = %q, want foo", it.Key)
+	}
+	if string(it.Value) != "fooval" {
+		t.Errorf("get(foo) Value = %q, want fooval", string(it.Value))
+	}
+	if it.Flags != 123 {
+		t.Errorf("get(foo) Flags = %v, want 123", it.Flags)
+	}
+
+	// GetUDP key not found
+	it, err = c.GetUDP("foo1")
+	if err != ErrCacheMiss {
+		t.Errorf("get(not-exists): expecting %v, got %v instead", ErrCacheMiss, err)
 	}
 }
