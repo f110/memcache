@@ -223,6 +223,7 @@ func NewFromServers(servers Servers) *Client {
 		maxIdlePerAddr: maxIdleConnsPerAddr,
 		servers:        servers,
 		freeconn:       make(map[string]chan *conn),
+		freeudpconn:    make(map[string]chan *conn),
 		bufPool:        make(chan []byte, poolSize()),
 		reqId:          uint16(rand.Intn(math.MaxUint16)),
 	}
@@ -236,6 +237,7 @@ type Client struct {
 	servers        Servers
 	mu             sync.RWMutex
 	freeconn       map[string]chan *conn
+	freeudpconn    map[string]chan *conn
 	bufPool        chan []byte
 	reqId          uint16
 }
@@ -363,6 +365,15 @@ func (c *Client) condRelease(cn *conn, err *error) {
 	}
 }
 
+func (c *Client) condUDPRelease(cn *conn, err *error) {
+	switch *err {
+	case nil, ErrCacheMiss, ErrCASConflict, ErrNotStored, ErrBadIncrDec:
+		c.putFreeUDPConn(cn)
+	default:
+		cn.nc.Close()
+	}
+}
+
 func (c *Client) closeIdleConns() {
 	for _, v := range c.freeconn {
 	NextIdle:
@@ -396,9 +407,43 @@ func (c *Client) putFreeConn(cn *conn) {
 	}
 }
 
+func (c *Client) putFreeUDPConn(cn *conn) {
+	c.mu.RLock()
+	freelist := c.freeudpconn[cn.addr.s]
+	maxIdle := c.maxIdlePerAddr
+	c.mu.RUnlock()
+	if freelist == nil && maxIdle > 0 {
+		freelist = make(chan *conn, maxIdle)
+		c.mu.Lock()
+		c.freeudpconn[cn.addr.s] = freelist
+		c.mu.Unlock()
+	}
+	select {
+	case freelist <- cn:
+		break
+	default:
+		cn.nc.Close()
+	}
+}
+
 func (c *Client) getFreeConn(addr *Addr) *conn {
 	c.mu.RLock()
 	freelist := c.freeconn[addr.s]
+	c.mu.RUnlock()
+	if freelist == nil {
+		return nil
+	}
+	select {
+	case cn := <-freelist:
+		return cn
+	default:
+		return nil
+	}
+}
+
+func (c *Client) getFreeUDPConn(addr *Addr) *conn {
+	c.mu.RLock()
+	freelist := c.freeudpconn[addr.s]
 	c.mu.RUnlock()
 	if freelist == nil {
 		return nil
@@ -463,13 +508,16 @@ func (c *Client) getConn(addr *Addr) (*conn, error) {
 }
 
 func (c *Client) getUDPConn(addr *Addr) (*conn, error) {
-	nc, err := net.Dial("udp", addr.s)
-	if err != nil {
-		return nil, err
-	}
-	cn := &conn{
-		nc:   nc,
-		addr: addr,
+	cn := c.getFreeUDPConn(addr)
+	if cn == nil {
+		nc, err := net.Dial("udp", addr.s)
+		if err != nil {
+			return nil, err
+		}
+		cn = &conn{
+			nc:   nc,
+			addr: addr,
+		}
 	}
 	if c.timeout > 0 {
 		cn.nc.SetDeadline(time.Now().Add(c.timeout))
@@ -536,7 +584,7 @@ func (c *Client) sendConnCommand(cn *conn, key string, cmd command, value []byte
 	case buf = <-c.bufPool:
 		buf = buf[:24]
 	default:
-		buf = make([]byte, 24, 24+len(key)+len(extras))
+		buf = make([]byte, 24, 32+len(key)+len(extras))
 		// Magic (0)
 		buf[0] = reqMagic
 	}
@@ -583,12 +631,15 @@ func (c *Client) sendConnCommand(cn *conn, key string, cmd command, value []byte
 func (c *Client) sendUDPConnCommand(cn *conn, key string, cmd command, value []byte, casid uint64, extras []byte) (reqId uint16, err error) {
 	var buf []byte
 	// 32 is header size
-	buf = make([]byte, 32, 32+len(key)+len(extras))
+	select {
+	case buf = <-c.bufPool:
+		buf = buf[:32]
+	default:
+		buf = make([]byte, 32, 32+len(key)+len(extras))
+	}
 	reqId = c.NextReqId()
 	putUint16(buf[0:], uint16(reqId))
-	putUint16(buf[2:], uint16(0))
 	putUint16(buf[4:], uint16(1))
-	putUint16(buf[6:], uint16(0))
 	// Magic (0)
 	buf[8] = reqMagic
 	// Command (1)
@@ -617,7 +668,16 @@ func (c *Client) sendUDPConnCommand(cn *conn, key string, cmd command, value []b
 		buf = append(buf, stobs(key)...)
 	}
 	if _, err = cn.nc.Write(buf); err != nil {
+		select {
+		case c.bufPool <- buf:
+		default:
+		}
 		return 0, err
+	}
+
+	select {
+	case c.bufPool <- buf:
+	default:
 	}
 	if vl > 0 {
 		if _, err = cn.nc.Write(value); err != nil {
@@ -771,7 +831,7 @@ func (c *Client) parseItemResponse(key string, cn *conn, release bool) (*Item, e
 func (c *Client) parseItemUDPResponse(key string, cn *conn, reqId uint16, release bool) (*Item, error) {
 	hdr, k, extras, value, err := c.parseUDPResponse(key, cn, reqId)
 	if release {
-		c.condRelease(cn, &err)
+		c.condUDPRelease(cn, &err)
 	}
 	if err != nil {
 		return nil, err

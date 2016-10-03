@@ -8,39 +8,39 @@ import (
 	"time"
 )
 
-func benchmarkSet(b *testing.B, item *Item) {
-	cmd, c := newUnixServer(b)
-	c.SetTimeout(time.Duration(-1))
-	b.SetBytes(int64(len(item.Key) + len(item.Value)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := c.Set(item); err != nil {
-			b.Fatal(err)
-		}
-	}
-	b.StopTimer()
-	cmd.Process.Kill()
-	cmd.Wait()
-}
+//func benchmarkSet(b *testing.B, item *Item) {
+	//cmd, c := newUnixServer(b)
+	//c.SetTimeout(time.Duration(-1))
+	//b.SetBytes(int64(len(item.Key) + len(item.Value)))
+	//b.ResetTimer()
+	//for i := 0; i < b.N; i++ {
+		//if err := c.Set(item); err != nil {
+			//b.Fatal(err)
+		//}
+	//}
+	//b.StopTimer()
+	//cmd.Process.Kill()
+	//cmd.Wait()
+//}
 
-func benchmarkSetGet(b *testing.B, item *Item) {
-	cmd, c := newUnixServer(b)
-	c.SetTimeout(time.Duration(-1))
-	key := item.Key
-	b.SetBytes(int64(len(item.Key) + len(item.Value)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := c.Set(item); err != nil {
-			b.Fatal(err)
-		}
-		if _, err := c.Get(key); err != nil {
-			b.Fatal(err)
-		}
-	}
-	b.StopTimer()
-	cmd.Process.Kill()
-	cmd.Wait()
-}
+//func benchmarkSetGet(b *testing.B, item *Item) {
+	//cmd, c := newUnixServer(b)
+	//c.SetTimeout(time.Duration(-1))
+	//key := item.Key
+	//b.SetBytes(int64(len(item.Key) + len(item.Value)))
+	//b.ResetTimer()
+	//for i := 0; i < b.N; i++ {
+		//if err := c.Set(item); err != nil {
+			//b.Fatal(err)
+		//}
+		//if _, err := c.Get(key); err != nil {
+			//b.Fatal(err)
+		//}
+	//}
+	//b.StopTimer()
+	//cmd.Process.Kill()
+	//cmd.Wait()
+//}
 
 func largeItem() *Item {
 	key := strings.Repeat("f", 240)
@@ -52,21 +52,21 @@ func smallItem() *Item {
 	return &Item{Key: "foo", Value: []byte("bar")}
 }
 
-func BenchmarkSet(b *testing.B) {
-	benchmarkSet(b, smallItem())
-}
+//func BenchmarkSet(b *testing.B) {
+	//benchmarkSet(b, smallItem())
+//}
 
-func BenchmarkSetLarge(b *testing.B) {
-	benchmarkSet(b, largeItem())
-}
+//func BenchmarkSetLarge(b *testing.B) {
+	//benchmarkSet(b, largeItem())
+//}
 
-func BenchmarkSetGet(b *testing.B) {
-	benchmarkSetGet(b, smallItem())
-}
+//func BenchmarkSetGet(b *testing.B) {
+	//benchmarkSetGet(b, smallItem())
+//}
 
-func BenchmarkSetGetLarge(b *testing.B) {
-	benchmarkSetGet(b, largeItem())
-}
+//func BenchmarkSetGetLarge(b *testing.B) {
+	//benchmarkSetGet(b, largeItem())
+//}
 
 func benchmarkConcurrentSetGet(b *testing.B, item *Item, count int, opcount int) {
 	mp := runtime.GOMAXPROCS(0)
@@ -134,18 +134,34 @@ func BenchmarkGetUDPCacheMiss(b *testing.B) {
 	b.StopTimer()
 }
 
-func BenchmarkConcurrentSetGetSmall10_100(b *testing.B) {
-	benchmarkConcurrentSetGet(b, smallItem(), 10, 100)
+func BenchmarkGet(b *testing.B) {
+	c := newLocalhostServer(b)
+	c.SetTimeout(time.Duration(-1))
+	item := smallItem()
+	c.Set(item)
+	key := item.Key
+	b.SetBytes(int64(len(item.Key) + len(item.Value)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := c.Get(key); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
 }
 
-func BenchmarkConcurrentSetGetLarge10_100(b *testing.B) {
-	benchmarkConcurrentSetGet(b, largeItem(), 10, 100)
-}
-
-func BenchmarkConcurrentSetGetSmall20_100(b *testing.B) {
-	benchmarkConcurrentSetGet(b, smallItem(), 20, 100)
-}
-
-func BenchmarkConcurrentSetGetLarge20_100(b *testing.B) {
-	benchmarkConcurrentSetGet(b, largeItem(), 20, 100)
+func BenchmarkGetUDP(b *testing.B) {
+	c := newLocalhostServer(b)
+	c.SetTimeout(time.Duration(-1))
+	item := smallItem()
+	c.Set(item)
+	key := item.Key
+	b.SetBytes(int64(len(item.Key) + len(item.Value)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := c.GetUDP(key); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
 }
