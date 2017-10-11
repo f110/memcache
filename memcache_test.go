@@ -199,4 +199,10 @@ func testWithClient(t *testing.T, c *Client) {
 	if err != ErrCacheMiss {
 		t.Fatalf("post-flush: want ErrCacheMiss, got %v", err)
 	}
+	// Stats
+	res, err := c.Stats()
+	checkErr(err, "stats: %v", err)
+	if len(res) == 0 {
+		t.Fatalf("failed fetch stats")
+	}
 }

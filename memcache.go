@@ -787,3 +787,37 @@ func (c *Client) Flush(expiration int) error {
 	}
 	return nil
 }
+
+func (c *Client) Stats() (map[string]map[string]string, error) {
+	servers, err := c.servers.Servers()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]map[string]string)
+	for _, addr := range servers {
+		conn, err := c.getConn(addr)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.sendConnCommand(conn, "", cmdStat, nil, 0, nil); err != nil {
+			return nil, err
+		}
+
+		for {
+			_, key, _, value, err := c.parseResponse("", conn)
+			if err != nil {
+				return nil, err
+			}
+			if len(key) == 0 && len(value) == 0 {
+				break
+			}
+			if _, ok := result[addr.s]; ok == false {
+				result[addr.s] = make(map[string]string)
+			}
+			result[addr.s][string(key)] = string(value)
+		}
+	}
+
+	return result, nil
+}
