@@ -25,6 +25,7 @@ import (
 	"io/ioutil"
 	"net"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -788,13 +789,13 @@ func (c *Client) Flush(expiration int) error {
 	return nil
 }
 
-func (c *Client) Stats() (map[string]map[string]string, error) {
+func (c *Client) Stats() (map[string]map[string]interface{}, error) {
 	servers, err := c.servers.Servers()
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[string]map[string]string)
+	result := make(map[string]map[string]interface{})
 	for _, addr := range servers {
 		conn, err := c.getConn(addr)
 		if err != nil {
@@ -813,9 +814,18 @@ func (c *Client) Stats() (map[string]map[string]string, error) {
 				break
 			}
 			if _, ok := result[addr.s]; ok == false {
-				result[addr.s] = make(map[string]string)
+				result[addr.s] = make(map[string]interface{})
 			}
-			result[addr.s][string(key)] = string(value)
+			sv := string(value)
+			if i, err := strconv.ParseInt(sv, 10, 64); err == nil {
+				result[addr.s][string(key)] = i
+				continue
+			}
+			if f, err := strconv.ParseFloat(sv, 32); err == nil {
+				result[addr.s][string(key)] = f
+				continue
+			}
+			result[addr.s][string(key)] = sv
 		}
 	}
 
